@@ -1,0 +1,77 @@
+# Script to scrape all text from the specified URL using Selenium
+# Purpose: Extract the full content of the page, including dynamically expanded sections, and isolate specific content
+
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from webdriver_manager.chrome import ChromeDriverManager
+import logging
+import time
+
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# Set up the Selenium WebDriver using ChromeDriverManager
+options = webdriver.ChromeOptions()
+options.add_argument("--headless")  # Run in headless mode if you don't need a browser window
+options.add_argument("--no-sandbox")
+options.add_argument("--disable-dev-shm-usage")
+
+driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+
+try:
+    # Open the specified URL
+    url = "https://www.gov.il/he/departments/dynamiccollectors/hesdermutne?skip=0"
+    logging.info(f"Accessing URL: {url}")
+    driver.get(url)
+
+    # Wait for the page to load
+    WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+    logging.info("Page loaded successfully.")
+
+    # Locate and click on the button to expand additional content
+    try:
+        expand_buttons = driver.find_elements(By.XPATH, "//div[@ng-click='item.isDisplay = !item.isDisplay']")
+        for button in expand_buttons:
+            driver.execute_script("arguments[0].click();", button)
+            time.sleep(1)  # Allow time for the content to expand
+        logging.info(f"Clicked {len(expand_buttons)} expand buttons.")
+    except Exception as e:
+        logging.error(f"Could not expand all content: {e}")
+
+    # Scroll to the bottom to ensure all dynamic content loads
+    last_height = driver.execute_script("return document.body.scrollHeight")
+    while True:
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        time.sleep(2)  # Adjust based on loading speed
+        new_height = driver.execute_script("return document.body.scrollHeight")
+        if new_height == last_height:
+            break
+        last_height = new_height
+    logging.info("Finished scrolling to the bottom of the page.")
+
+    # Extract the full page source
+    page_source = driver.page_source
+
+    # Isolate specific content
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup(page_source, "html.parser")
+
+    specific_sections = soup.find_all("div", class_="row row-gov")
+
+    if specific_sections:
+        logging.info("Found specific sections. Extracting relevant content.")
+        for section in specific_sections:
+            logging.info(section.prettify())
+    else:
+        logging.warning("No specific sections found. Verify the structure and selectors.")
+
+except Exception as e:
+    logging.error(f"An error occurred: {e}")
+
+finally:
+    # Close the driver
+    driver.quit()
+    logging.info("Driver closed.")
