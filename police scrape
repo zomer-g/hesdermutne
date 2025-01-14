@@ -1,5 +1,5 @@
-# Script to scrape all text from the specified URL using Selenium
-# Purpose: Extract the full content of the page, including dynamically expanded sections, and isolate specific content
+# Script to dynamically expand and extract content surrounding sections
+# Purpose: Extract labeled data from a webpage and handle varying content structures
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -7,22 +7,23 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
+from bs4 import BeautifulSoup
 import logging
 import time
+import csv
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Set up the Selenium WebDriver using ChromeDriverManager
+# Set up the Selenium WebDriver
 options = webdriver.ChromeOptions()
-options.add_argument("--headless")  # Run in headless mode if you don't need a browser window
+options.add_argument("--headless")
 options.add_argument("--no-sandbox")
 options.add_argument("--disable-dev-shm-usage")
-
 driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
 
 try:
-    # Open the specified URL
+    # Open the URL
     url = "https://www.gov.il/he/departments/dynamiccollectors/hesdermutne?skip=0"
     logging.info(f"Accessing URL: {url}")
     driver.get(url)
@@ -31,47 +32,81 @@ try:
     WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
     logging.info("Page loaded successfully.")
 
-    # Locate and click on the button to expand additional content
-    try:
-        expand_buttons = driver.find_elements(By.XPATH, "//div[@ng-click='item.isDisplay = !item.isDisplay']")
-        for button in expand_buttons:
-            driver.execute_script("arguments[0].click();", button)
-            time.sleep(1)  # Allow time for the content to expand
-        logging.info(f"Clicked {len(expand_buttons)} expand buttons.")
-    except Exception as e:
-        logging.error(f"Could not expand all content: {e}")
+    # Locate and click all expandable sections
+    expand_buttons = driver.find_elements(By.XPATH, "//div[@ng-click='item.isDisplay = !item.isDisplay']")
+    for button in expand_buttons:
+        driver.execute_script("arguments[0].click();", button)
+        time.sleep(1)  # Wait for content to expand
+    logging.info(f"Clicked {len(expand_buttons)} expand buttons.")
 
-    # Scroll to the bottom to ensure all dynamic content loads
-    last_height = driver.execute_script("return document.body.scrollHeight")
-    while True:
-        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-        time.sleep(2)  # Adjust based on loading speed
-        new_height = driver.execute_script("return document.body.scrollHeight")
-        if new_height == last_height:
-            break
-        last_height = new_height
-    logging.info("Finished scrolling to the bottom of the page.")
-
-    # Extract the full page source
+    # Extract page source after expanding all sections
     page_source = driver.page_source
 
-    # Isolate specific content
-    from bs4 import BeautifulSoup
+    # Parse the HTML content using BeautifulSoup
     soup = BeautifulSoup(page_source, "html.parser")
 
-    specific_sections = soup.find_all("div", class_="row row-gov")
+    # Define column titles
+    titles = [
+        "מספר תיק",
+        "שלוחה",
+        "תאריך",
+        "תאריך עברי",
+        "תיאור התיק",
+        "תיאור העובדות המהוות עבירה שבהן הודה החשוד",
+        "הוראות החיקוק שפורטו בהסדר",
+        "תנאי הסדר",
+        "נימוקים לסגירת התיק בהסדר"
+    ]
 
-    if specific_sections:
-        logging.info("Found specific sections. Extracting relevant content.")
-        for section in specific_sections:
-            logging.info(section.prettify())
-    else:
-        logging.warning("No specific sections found. Verify the structure and selectors.")
+    extracted_data = []
+
+    # Find all sections containing the data
+    sections = soup.find_all("div", class_="row row-gov")
+    logging.info(f"Found {len(sections)} sections to parse.")
+
+    for section in sections:
+        row = []
+        for title in titles:
+            content = ""
+            try:
+                # Locate data by label or header
+                label = section.find("label", string=title)
+                if label:
+                    content_element = label.find_next("span") or label.find_next("bdi")
+                    content = content_element.get_text(strip=True) if content_element else ""
+                else:
+                    # Handle special cases for headers or other unique formats
+                    if title in ["תיאור העובדות המהוות עבירה שבהן הודה החשוד", "תנאי הסדר", "נימוקים לסגירת התיק בהסדר"]:
+                        header = section.find("h3", string=title)
+                        if header:
+                            if header.find_next("li"):
+                                content = "\n".join(li.get_text(strip=True) for li in header.find_next("ul").find_all("li"))
+                            elif header.find_next("table"):
+                                content = "\n".join(
+                                    [row.get_text(strip=True) for row in header.find_next("table").find_all("td")]
+                                )
+                    elif title == "תיאור התיק":
+                        content_element = section.find("div", class_="dark-gray-txt")
+                        content = content_element.get_text(strip=True) if content_element else ""
+                row.append(content)
+                logging.info(f"Extracted content for '{title}': {content[:50]}...")  # Log truncated content
+            except Exception as e:
+                logging.error(f"Error extracting content for '{title}': {e}")
+                row.append("")  # Leave blank if data extraction fails
+
+        extracted_data.append(row)
+
+    # Save the extracted data to a CSV file
+    output_file = "extracted_content_final.csv"
+    with open(output_file, "w", encoding="utf-8", newline="") as file:
+        writer = csv.writer(file)
+        writer.writerow(titles)
+        writer.writerows(extracted_data)
+    logging.info(f"Extracted content saved to {output_file}")
 
 except Exception as e:
     logging.error(f"An error occurred: {e}")
 
 finally:
-    # Close the driver
     driver.quit()
     logging.info("Driver closed.")
