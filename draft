@@ -1,121 +1,79 @@
-# Script to extract and save full HTML content from a webpage dynamically
-# Purpose: Extract relevant data blocks and save them into a CSV file
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
-from bs4 import BeautifulSoup
-import logging
 import time
 import csv
 
-# Set up logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-# Selenium WebDriver setup
-options = webdriver.ChromeOptions()
+# Set up Chrome options for headless mode (no browser UI)
+options = Options()
 options.add_argument("--headless")
 options.add_argument("--no-sandbox")
 options.add_argument("--disable-dev-shm-usage")
+
+# Initialize the WebDriver
 driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
 
-try:
+
+def extract_relevant_blocks():
+    """Extract relevant content blocks that match the specified structure."""
     # Open the URL
     url = "https://www.gov.il/he/departments/dynamiccollectors/hesdermutne?skip=0"
-    logging.info(f"Accessing URL: {url}")
     driver.get(url)
 
-    # Wait for the page to load
-    WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+    # Wait for the page to load completely
+    time.sleep(5)
 
-    # Locate and click all expandable sections
+    # Click all "view more" buttons to expand the content
     expand_buttons = driver.find_elements(By.XPATH, "//div[@ng-click='item.isDisplay = !item.isDisplay']")
     for button in expand_buttons:
-        driver.execute_script("arguments[0].click();", button)
-        time.sleep(1)  # Wait for content to expand
-    logging.info(f"Clicked {len(expand_buttons)} expand buttons.")
+        button.click()
+        time.sleep(1)  # Wait for content to load
 
-    # Extract page source after expanding all sections
-    page_source = driver.page_source
-    logging.info("Extracted the full page source.")
+    # Find the relevant blocks by the div structure
+    blocks = driver.find_elements(By.XPATH, "//div[@class='row row-gov']")
+    relevant_blocks = []
 
-    # Parse the content with BeautifulSoup
-    soup = BeautifulSoup(page_source, "html.parser")
-
-    # Define the titles we are looking for
-    titles = [
-        "מספר תיק",
-        "שלוחה",
-        "תאריך",
-        "תאריך עברי",
-        "תיאור התיק",
-        "תיאור העובדות המהוות עבירה שבהן הודה החשוד",
-        "הוראות החיקוק שפורטו בהסדר",
-        "תנאי הסדר",
-        "נימוקים לסגירת התיק בהסדר"
-    ]
-
-    # Initialize a list to hold all extracted data
-    extracted_data = []
-
-    # Find all blocks that contain the data (the blocks in the sample are div elements with class "row row-gov")
-    blocks = soup.find_all("div", class_="row row-gov")
-
-    # Loop through each block and extract data
     for block in blocks:
-        row_data = []
-        for title in titles:
-            # Try to find the label and extract the corresponding data
-            label = block.find("label", string=title)
-            content = ""
+        # Check if this block contains the specific structure (label and span with content)
+        if block.find_elements(By.XPATH, ".//label[normalize-space(text())='מספר תיק']"):
+            relevant_blocks.append(block.get_attribute("outerHTML"))
 
-            if label:
-                content_element = label.find_next("span") or label.find_next("bdi")
-                content = content_element.get_text(strip=True) if content_element else ""
-            else:
-                # Handle cases where we don't find the label directly, check for other relevant tags
-                header = block.find("h3", string=title)
-                if header:
-                    # If it's a list (ul)
-                    if header.find_next("ul"):
-                        content = "\n".join([li.get_text(strip=True) for li in header.find_next("ul").find_all("li")])
-                    # If it's a table
-                    elif header.find_next("table"):
-                        content = "\n".join(
-                            [td.get_text(strip=True) for td in header.find_next("table").find_all("td")])
-                    # If it's text inside a div after a header
-                    else:
-                        content_element = header.find_next("div")
-                        content = content_element.get_text(strip=True) if content_element else ""
-                else:
-                    # Check for descriptions in divs under sections
-                    description_section = block.find("div", class_="dark-gray-txt")
-                    if description_section:
-                        content = description_section.get_text(strip=True)
+    return relevant_blocks
 
-            row_data.append(content)
 
-        # Only add rows that have data in any of the columns
-        if any(row_data):
-            extracted_data.append(row_data)
+def save_to_txt(relevant_blocks):
+    """Save the relevant content blocks to a TXT file."""
+    with open("relevant_blocks.txt", "w", encoding="utf-8") as file:
+        file.write("\n\n".join(relevant_blocks))
+    print("Relevant content blocks have been saved to 'relevant_blocks.txt'.")
 
-    # Define the output CSV file path (save in the current working directory)
-    output_csv_path = "parsed_data.csv"
 
-    # Save the parsed data to a CSV file
-    with open(output_csv_path, "w", encoding="utf-8", newline="") as file:
+def save_to_csv(relevant_blocks):
+    """Save the relevant content blocks to a CSV file."""
+    with open("relevant_blocks.csv", "w", encoding="utf-8", newline="") as file:
         writer = csv.writer(file)
-        writer.writerow(titles)  # Write the headers
-        writer.writerows(extracted_data)  # Write the rows
+        writer.writerow(["Block Content"])  # Header row
+        for block in relevant_blocks:
+            writer.writerow([block])  # Write each block as a new row
+    print("Relevant content blocks have been saved to 'relevant_blocks.csv'.")
 
-    logging.info(f"Extracted content saved to {output_csv_path}")
+
+try:
+    # Extract the relevant blocks
+    relevant_blocks = extract_relevant_blocks()
+
+    # Export the blocks to a TXT file
+    save_to_txt(relevant_blocks)
+
+    # Export the blocks to a CSV file
+    save_to_csv(relevant_blocks)
 
 except Exception as e:
-    logging.error(f"An error occurred: {e}")
+    print(f"An error occurred: {e}")
 
 finally:
     driver.quit()
-    logging.info("Driver closed.")
+    print("Driver closed.")
