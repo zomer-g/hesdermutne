@@ -1,4 +1,3 @@
-
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
@@ -18,9 +17,9 @@ driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), opti
 
 
 def extract_relevant_blocks():
-    """Extract relevant content blocks that match the specified structure."""
+    """Extract relevant content blocks and specific details."""
     # Open the URL
-    url = "https://www.gov.il/he/departments/dynamiccollectors/hesdermutne?skip=0"
+    url = "https://www.gov.il/he/departments/dynamiccollectors/hesdermutne?skip=10"
     driver.get(url)
 
     # Wait for the page to load completely
@@ -34,42 +33,61 @@ def extract_relevant_blocks():
 
     # Find the relevant blocks by the div structure
     blocks = driver.find_elements(By.XPATH, "//div[@class='row row-gov']")
-    relevant_blocks = []
+    extracted_data = []
 
     for block in blocks:
-        # Check if this block contains the specific structure (label and span with content)
-        if block.find_elements(By.XPATH, ".//label[normalize-space(text())='מספר תיק']"):
-            relevant_blocks.append(block.get_attribute("outerHTML"))
+        try:
+            case_number = block.find_element(By.XPATH,
+                                             ".//label[contains(text(), 'מספר תיק')]/following-sibling::span").text
+            branch = block.find_element(By.XPATH, ".//label[contains(text(), 'שלוחה')]/following-sibling::span").text
+            date = block.find_element(By.XPATH, ".//label[contains(text(), 'תאריך')]/following-sibling::span").text
+            hebrew_date = block.find_element(By.XPATH,
+                                             ".//label[contains(text(), 'תאריך עברי')]/following-sibling::span").text
+            description = block.find_element(By.XPATH,
+                                             ".//h3[contains(text(), 'תיאור העובדות')]/following-sibling::li").text
+            legislation = block.find_element(By.XPATH,
+                                             ".//h3[contains(text(), 'הוראות החיקוק')]/following-sibling::li").text
+            conditions = block.find_element(By.XPATH, ".//h3[contains(text(), 'תנאי הסדר')]/following-sibling::li").text
+            reasoning = block.find_element(By.XPATH,
+                                           ".//h3[contains(text(), 'נימוקים לסגירת התיק')]/following-sibling::div").text
 
-    return relevant_blocks
+            extracted_data.append({
+                "מספר תיק": case_number,
+                "שלוחה": branch,
+                "תאריך": date,
+                "תאריך עברי": hebrew_date,
+                "תיאור העובדות המהוות עבירה שבהן הודה החשוד": description,
+                "הוראות החיקוק שפורטו בהסדר": legislation,
+                "תנאי הסדר": conditions,
+                "נימוקים לסגירת התיק בהסדר": reasoning,
+            })
+        except Exception as e:
+            print(f"Error extracting block: {e}")
+
+    return extracted_data
 
 
-def save_to_txt(relevant_blocks):
-    """Save the relevant content blocks to a TXT file."""
-    with open("relevant_blocks.txt", "w", encoding="utf-8") as file:
-        file.write("\n\n".join(relevant_blocks))
-    print("Relevant content blocks have been saved to 'relevant_blocks.txt'.")
-
-
-def save_to_csv(relevant_blocks):
-    """Save the relevant content blocks to a CSV file."""
-    with open("relevant_blocks.csv", "w", encoding="utf-8", newline="") as file:
-        writer = csv.writer(file)
-        writer.writerow(["Block Content"])  # Header row
-        for block in relevant_blocks:
-            writer.writerow([block])  # Write each block as a new row
-    print("Relevant content blocks have been saved to 'relevant_blocks.csv'.")
+def save_to_csv(data):
+    """Save the extracted data to a CSV file."""
+    with open("updated_blocks.csv", "w", encoding="utf-8", newline="") as file:
+        writer = csv.DictWriter(file, fieldnames=[
+            "מספר תיק", "שלוחה", "תאריך", "תאריך עברי",
+            "תיאור העובדות המהוות עבירה שבהן הודה החשוד",
+            "הוראות החיקוק שפורטו בהסדר",
+            "תנאי הסדר",
+            "נימוקים לסגירת התיק בהסדר",
+        ])
+        writer.writeheader()
+        writer.writerows(data)
+    print("Updated content blocks have been saved to 'updated_blocks.csv'.")
 
 
 try:
-    # Extract the relevant blocks
-    relevant_blocks = extract_relevant_blocks()
+    # Extract the relevant blocks and details
+    extracted_data = extract_relevant_blocks()
 
-    # Export the blocks to a TXT file
-    save_to_txt(relevant_blocks)
-
-    # Export the blocks to a CSV file
-    save_to_csv(relevant_blocks)
+    # Save the extracted data to a CSV file
+    save_to_csv(extracted_data)
 
 except Exception as e:
     print(f"An error occurred: {e}")
