@@ -1,58 +1,193 @@
-# Import necessary libraries
+# Purpose:
+# This script uses Selenium to scrape content blocks from a dynamic government website.
+# It extracts specific fields including "מספר תיק", "שלוחה", "תאריך", "תאריך עברי",
+# "תיאור העובדות המהוות עבירה שבהן הודה החשוד", "הוראות החיקוק שפורטו בהסדר",
+# "תנאי הסדר", and "נימוקים לסגירת התיק בהסדר". For debugging purposes, it exports
+# the raw HTML of each page to a TXT file so you can inspect pages where extraction fails.
+# Extra fallback logic and detailed logging are added to help diagnose issues such as dynamic content loading,
+# incorrect element selection, and page structure differences.
+# The extraction logic for "הוראות החיקוק שפורטו בהסדר" now stops when an <h3> element containing "תנאי הסדר" is encountered.
+
+# ------------------------------------------------------------
+# Import necessary libraries and modules
+# ------------------------------------------------------------
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 import time
 import csv
 
+# ------------------------------------------------------------
 # Set up Chrome options for headless mode (no browser UI)
+# ------------------------------------------------------------
 options = Options()
 options.add_argument("--headless")
 options.add_argument("--no-sandbox")
 options.add_argument("--disable-dev-shm-usage")
 
-# Initialize the WebDriver
+# ------------------------------------------------------------
+# Initialize the WebDriver using webdriver_manager
+# ------------------------------------------------------------
+print("Initializing WebDriver...")
 driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+print("WebDriver initialized.")
 
+# ------------------------------------------------------------
+# Define a function to wait for an element's presence
+# ------------------------------------------------------------
+def wait_for_element(by, identifier, timeout=20):
+    try:
+        element = WebDriverWait(driver, timeout).until(
+            EC.presence_of_element_located((by, identifier))
+        )
+        return element
+    except Exception as e:
+        print(f"Timeout waiting for element {identifier}: {e}")
+        return None
 
-def extract_relevant_blocks(url):
-    """Extract relevant content blocks and specific details from a given URL."""
-    driver.get(url)  # Open the URL
+# ------------------------------------------------------------
+# Define function to export the raw HTML of the current page to a TXT file
+# ------------------------------------------------------------
+def export_page_html(page_number):
+    filename = f"page_{page_number}.txt"
+    try:
+        with open(filename, "w", encoding="utf-8") as f:
+            f.write(driver.page_source)
+        print(f"Page source exported to {filename}")
+    except Exception as e:
+        print(f"Error exporting page source to {filename}: {e}")
 
-    # Wait for the page to load completely
-    time.sleep(5)
+# ------------------------------------------------------------
+# Define function to extract the case number (מספר תיק) from a content block
+# ------------------------------------------------------------
+def extract_case_number(block):
+    # Try primary XPath
+    try:
+        return block.find_element(By.XPATH, ".//label[contains(text(), 'מספר תיק')]/following-sibling::span").text
+    except Exception as e:
+        print("Primary XPath for case number failed:", e)
+    # Try alternative approach 1: Look for a span that contains a slash (often present in case numbers)
+    try:
+        candidates = block.find_elements(By.XPATH, ".//span")
+        for cand in candidates:
+            text = cand.text.strip()
+            if "/" in text and len(text) > 5:
+                return text
+    except Exception as e:
+        print("Alternative approach 1 for case number failed:", e)
+    # Try alternative approach 2: Look for any element with text that includes common year substrings
+    try:
+        candidates = block.find_elements(By.XPATH, ".//*")
+        for cand in candidates:
+            text = cand.text.strip()
+            if any(year in text for year in ["2021", "2022", "2023", "2024"]):
+                return text
+    except Exception as e:
+        print("Alternative approach 2 for case number failed:", e)
+    # Nothing found – return None
+    return None
 
-    # Click all "view more" buttons to expand the content
-    expand_buttons = driver.find_elements(By.XPATH, "//div[@ng-click='item.isDisplay = !item.isDisplay']")
-    for button in expand_buttons:
-        driver.execute_script("arguments[0].click();", button)
-        time.sleep(1)  # Wait for content to load
-
-    # Find the relevant blocks by the div structure
-    blocks = driver.find_elements(By.XPATH, "//div[@class='row row-gov']")
+# ------------------------------------------------------------
+# Define function to extract relevant content blocks from a given URL
+# ------------------------------------------------------------
+def extract_relevant_blocks(url, page_number):
+    """
+    Extracts content blocks and their fields from the given URL.
+    Exports the raw HTML for debugging.
+    Logs detailed errors and, if extraction fails for a block,
+    logs the block's outer HTML.
+    """
+    try:
+        print(f"Accessing URL: {url}")
+        driver.get(url)
+    except Exception as e:
+        print(f"Error loading URL {url}: {e}")
+        return []
+    
+    # Increase wait time to ensure dynamic content is loaded.
+    time.sleep(10)
+    # Alternatively, you can uncomment the next line if you prefer explicit waits:
+    # wait_for_element(By.XPATH, "//div[@class='row row-gov']", timeout=20)
+    
+    # Export the page HTML for debugging purposes.
+    export_page_html(page_number)
+    
+    # ------------------------------------------------------------
+    # Click all "View More" buttons to expand content (if present)
+    # ------------------------------------------------------------
+    try:
+        print("Attempting to click all 'view more' buttons to expand content...")
+        expand_buttons = driver.find_elements(By.XPATH, "//div[@ng-click='item.isDisplay = !item.isDisplay']")
+        for button in expand_buttons:
+            driver.execute_script("arguments[0].click();", button)
+            print("Clicked a 'view more' button.")
+            time.sleep(1)  # Wait after clicking to allow content to fully expand.
+    except Exception as e:
+        print(f"Error clicking expand buttons: {e}")
+    
+    print("Locating content blocks on the page...")
+    # Adjust the XPath if necessary after reviewing exported HTML (page_X.txt)
+    blocks = driver.find_elements(By.XPATH, "//div[contains(@class, 'row-gov')]")
     extracted_data = []
-
-    # Use a set to track processed blocks by their unique identifiers (e.g., case number)
     processed_cases = set()
-
-    for block in blocks:
+    
+    for idx, block in enumerate(blocks):
         try:
-            case_number = block.find_element(By.XPATH, ".//label[contains(text(), 'מספר תיק')]/following-sibling::span").text
+            case_number = extract_case_number(block)
+            if not case_number:
+                print("Warning: No case number found in block. Block HTML:")
+                print(block.get_attribute("outerHTML"))
+                # Depending on requirements, you may choose to continue extracting data without a case number.
+                case_number = "MISSING"
             if case_number in processed_cases:
-                continue  # Skip duplicate blocks
-
-            processed_cases.add(case_number)  # Mark this case as processed
-
+                print(f"Skipping duplicate case: {case_number}")
+                continue
+            processed_cases.add(case_number)
+            
             branch = block.find_element(By.XPATH, ".//label[contains(text(), 'שלוחה')]/following-sibling::span").text
             date = block.find_element(By.XPATH, ".//label[contains(text(), 'תאריך')]/following-sibling::span").text
             hebrew_date = block.find_element(By.XPATH, ".//label[contains(text(), 'תאריך עברי')]/following-sibling::span").text
             description = block.find_element(By.XPATH, ".//h3[contains(text(), 'תיאור העובדות')]/following-sibling::li").text
-            legislation = block.find_element(By.XPATH, ".//h3[contains(text(), 'הוראות החיקוק')]/following-sibling::li").text
-            conditions = block.find_element(By.XPATH, ".//h3[contains(text(), 'תנאי הסדר')]/following-sibling::li").text
+            
+            # ------------------------------------------------------------
+            # Extract legislation: Collect consecutive <li> elements following the header,
+            # but stop if an <h3> containing "תנאי הסדר" is encountered.
+            # ------------------------------------------------------------
+            legislation = ""
+            try:
+                header_legislation = block.find_element(By.XPATH, ".//h3[contains(text(), 'הוראות החיקוק')]")
+                siblings = header_legislation.find_elements(By.XPATH, "following-sibling::*")
+                legislation_lines = []
+                for sib in siblings:
+                    # If an <h3> containing "תנאי הסדר" is encountered, break out of the loop.
+                    if sib.tag_name.lower() == "h3" and "תנאי הסדר" in sib.text:
+                        break
+                    if sib.tag_name.lower() == "li":
+                        legislation_lines.append(sib.text)
+                legislation = "\n".join(legislation_lines)
+                print("Extracted legislation content successfully.")
+            except Exception as e:
+                print(f"Error extracting legislation data: {e}")
+            
+            # ------------------------------------------------------------
+            # Extract conditions: Collect consecutive <li> elements following the header.
+            # ------------------------------------------------------------
+            conditions = ""
+            try:
+                header_conditions = block.find_element(By.XPATH, ".//h3[contains(text(), 'תנאי הסדר')]")
+                siblings = header_conditions.find_elements(By.XPATH, "following-sibling::*")
+                conditions_lines = [sib.text for sib in siblings if sib.tag_name.lower() == "li"]
+                conditions = "\n".join(conditions_lines)
+                print("Extracted conditions content successfully.")
+            except Exception as e:
+                print(f"Error extracting conditions data: {e}")
+            
             reasoning = block.find_element(By.XPATH, ".//h3[contains(text(), 'נימוקים לסגירת התיק')]/following-sibling::div").text
-
+            
             extracted_data.append({
                 "מספר תיק": case_number,
                 "שלוחה": branch,
@@ -63,14 +198,21 @@ def extract_relevant_blocks(url):
                 "תנאי הסדר": conditions,
                 "נימוקים לסגירת התיק בהסדר": reasoning,
             })
+            print(f"Extracted data for case {case_number}.")
         except Exception as e:
-            print(f"Error extracting block: {e}")
-
+            print(f"Error extracting data from a block: {e}")
+    
+    print(f"Total blocks extracted from page {page_number}: {len(extracted_data)}")
     return extracted_data
 
-
+# ------------------------------------------------------------
+# Define function to save extracted data to a CSV file
+# ------------------------------------------------------------
 def save_to_csv(data, filename):
-    """Save the extracted data to a CSV file."""
+    """
+    Saves the extracted data to a CSV file with proper headers.
+    """
+    print(f"Saving data to CSV file: {filename}...")
     with open(filename, "w", encoding="utf-8", newline="") as file:
         writer = csv.DictWriter(file, fieldnames=[
             "מספר תיק", "שלוחה", "תאריך", "תאריך עברי",
@@ -81,41 +223,43 @@ def save_to_csv(data, filename):
         ])
         writer.writeheader()
         writer.writerows(data)
-    print(f"Content blocks have been saved to '{filename}'.")
+    print(f"Data successfully saved to '{filename}'.")
 
-
-def process_all_pages(base_url, filename):
-    """Process pages iteratively until no content is found."""
-    page_number = 0
+# ------------------------------------------------------------
+# Define function to process pages within a specified range
+# ------------------------------------------------------------
+def process_all_pages(base_url, filename, start_page, end_page):
+    """
+    Processes pages from start_page to end_page (inclusive).
+    Exports each page's raw HTML to a TXT file for debugging.
+    Stops processing if an empty page is encountered.
+    """
     all_data = []
-
-    while True:
-        url = f"{base_url}?skip={page_number * 10}"
-        print(f"Processing URL: {url}")
-        data = extract_relevant_blocks(url)
-
+    for page in range(start_page, end_page + 1):
+        skip_value = (page - 1) * 10
+        url = f"{base_url}?skip={skip_value}"
+        print(f"Processing page {page}: {url}")
+        data = extract_relevant_blocks(url, page)
         if not data:
-            print("No content found on this page. Stopping.")
+            print(f"No content found on page {page}. Stopping further processing.")
             break
-
         all_data.extend(data)
-        page_number += 1
-
-    # Save the aggregated data to a CSV file
+        print(f"Completed processing for page {page}.")
     save_to_csv(all_data, filename)
+    print("All pages processed.")
 
-
+# ------------------------------------------------------------
+# Main execution block with error handling and final cleanup
+# ------------------------------------------------------------
 try:
-    # Base URL to process
+    print("Script started.")
     base_url = "https://www.gov.il/he/departments/dynamiccollectors/hesdermutne"
     output_filename = "updated_blocks.csv"
-
-    # Process all pages dynamically
-    process_all_pages(base_url, output_filename)
-
+    start_page = 1  # Starting from page 1
+    end_page = 5    # Process up to page 5
+    process_all_pages(base_url, output_filename, start_page, end_page)
 except Exception as e:
-    print(f"An error occurred: {e}")
-
+    print(f"An error occurred during execution: {e}")
 finally:
     driver.quit()
-    print("Driver closed.")
+    print("Driver closed. Script finished.")
